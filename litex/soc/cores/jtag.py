@@ -404,23 +404,17 @@ class JTAGPHY(LiteXModule):
         Provides a simple JTAG to LiteX stream module to easily stream data to/from the FPGA
         over JTAG.
 
-        Wire format: data_width + 3 bits, LSB first.
-
-        Due to JTAG timing constraints (the JTAGG primitive only captures TDO on falling
-        edge in Shift-DR, and the last shift's falling edge is in Exit1-DR), we need
-        data_width + 3 shift cycles to transfer data_width + 2 bits of information.
+        Wire format: data_width + 2 bits, LSB first.
 
         Host to Target:
           - TX ready : bit 0
-          - RX data  : bit 1 to data_width
+          - RX data: : bit 1 to data_width
           - RX valid : bit data_width + 1
-          - Padding  : bit data_width + 2 (ignored)
 
         Target to Host:
           - RX ready : bit 0
           - TX data  : bit 1 to data_width
           - TX valid : bit data_width + 1
-          - Padding  : bit data_width + 2 (repeat of valid)
         """
         self.sink   =   sink = stream.Endpoint([("data", data_width)])
         self.source = source = stream.Endpoint([("data", data_width)])
@@ -489,15 +483,6 @@ class JTAGPHY(LiteXModule):
         data  = Signal(data_width)
         count = Signal(max=data_width)
 
-        # RX valid/data - registered to hold for CDC transfer.
-        # These are updated via sync.jtag OUTSIDE the FSM to survive FSM resets.
-        # The JTAG TAP goes through Test-Logic-Reset between scans, which would
-        # clear NextValue registers via ResetInserter.
-        rx_valid    = Signal()
-        rx_data     = Signal(data_width)
-        update_rx   = Signal()  # Trigger to capture RX data
-        rx_valid_in = Signal()  # The valid bit to store
-
         # Ready signal - updated outside FSM to survive FSM resets.
         # This is critical: the JTAG TAP goes through Test-Logic-Reset between drscans,
         # which would clear NextValue registers via ResetInserter. By updating 'ready'
@@ -513,13 +498,6 @@ class JTAGPHY(LiteXModule):
         # edge, so it's stable when sampled on the falling edge.
         tdo_reg = Signal(reset=1)  # Start with ready=1 assumption
         self.comb += jtag_tdo.eq(tdo_reg)
-
-        # Detect shift falling edge (transition from Shift-DR to Exit1-DR)
-        # This is when the valid bit (bit9) is available but jtag.shift is already 0
-        shift_d = Signal()
-        self.sync.jtag += shift_d.eq(jtag.shift)
-        shift_falling = Signal()
-        self.comb += shift_falling.eq(shift_d & ~jtag.shift)
 
         fsm = FSM(reset_state="XFER-READY")
         fsm = ClockDomainsRenamer("jtag")(fsm)
@@ -551,42 +529,27 @@ class JTAGPHY(LiteXModule):
                 # Update tdo_reg to output current data bit BEFORE shifting
                 NextValue(tdo_reg, data[0]),
                 NextValue(data, Cat(data[1:], jtag_tdi)),
-                If(count == data_width,
-                    # After outputting all data bits, transition to XFER-VALID.
-                    # The valid bit is output on the NEXT shift cycle.
-                    # NOTE: We need data_width + 3 shift cycles total for the
-                    # data_width + 2 bit wire format because the JTAGG primitive
-                    # only captures TDO on falling edge in Shift-DR, and the last
-                    # falling edge is in Exit1-DR (doesn't capture).
-                    NextValue(tdo_reg, valid),
+                If(count == (data_width - 1),
                     NextState("XFER-VALID")
                 )
             )
         )
         fsm.act("XFER-VALID",
-            # Stay in this state for one shift cycle to output valid bit.
-            # Then on the next shift, output padding bit (repeat of valid).
-            # The actual valid bit from host arrives on shift_falling when TAP exits Shift-DR.
             If(jtag.shift,
-                # We're still in Shift-DR, output padding (valid repeated)
-                NextValue(tdo_reg, valid),
-                NextState("XFER-PADDING")
-            )
-        )
-        fsm.act("XFER-PADDING",
-            # The valid bit arrives when jtag.shift goes low (TAP exits Shift-DR).
-            # We use the falling edge of shift to capture the valid bit from jtag_tdi.
-            If(shift_falling,
-                # Capture RX valid bit for update_rx trigger (combinatorial)
-                rx_valid_in.eq(jtag_tdi),
-                # Trigger rx_valid/rx_data update (handled outside FSM)
-                update_rx.eq(1),
+                source.valid.eq(jtag_tdi),
+                source.data.eq(data),
                 # Update tdo_reg to output valid
                 NextValue(tdo_reg, valid),
                 update_ready.eq(1),  # Trigger ready update (outside FSM)
                 NextState("XFER-READY")
             )
         )
+
+        # Update ready via sync.jtag, NOT NextValue inside FSM.
+        # This register is only reset by the jtag clock domain reset,
+        # not by jtag.reset or FSM reset.
+        self.comb += ready_value.eq(source.ready)
+        self.sync.jtag += If(update_ready, ready.eq(ready_value))
 
 # ECP5 JTAG PHY (Verilog + AsyncFIFO) -----------------------------------------------------------------
 
