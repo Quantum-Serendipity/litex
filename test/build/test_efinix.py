@@ -215,3 +215,175 @@ def test_load_efinity_env_sources_setup(tmp_path):
     env = load_efinity_env(str(efinity_root))
 
     assert env["TEST_EFINITY_ENV"] == "loaded"
+
+
+# GPIO generation tests ----------------------------------------------------------------------------
+
+def test_generate_gpio_single_input():
+    writer = InterfaceWriter("/tmp/efinity")
+    block = {
+        "name":       "my_input",
+        "mode":       "INPUT",
+        "location":   ["A5"],
+        "properties": [],
+    }
+    cmds = writer.generate_gpio(block)
+    assert 'create_input_gpio("my_input")' in cmds
+    assert 'assign_pkg_pin("my_input","A5")' in cmds
+
+
+def test_generate_gpio_multi_output():
+    writer = InterfaceWriter("/tmp/efinity")
+    block = {
+        "name":       "led",
+        "mode":       "OUTPUT",
+        "location":   ["B1", "B2", "B3"],
+        "size":       3,
+        "properties": [],
+    }
+    cmds = writer.generate_gpio(block)
+    assert 'create_output_gpio("led",2,0)' in cmds
+    assert 'assign_pkg_pin("led[0]","B1")' in cmds
+    assert 'assign_pkg_pin("led[1]","B2")' in cmds
+    assert 'assign_pkg_pin("led[2]","B3")' in cmds
+
+
+def test_generate_gpio_inout_with_oe_reg():
+    writer = InterfaceWriter("/tmp/efinity")
+    block = {
+        "name":       "bidir",
+        "mode":       "INOUT",
+        "location":   ["C1"],
+        "properties": [],
+        "oe_reg":     "REG",
+    }
+    cmds = writer.generate_gpio(block)
+    assert 'create_inout_gpio("bidir")' in cmds
+    assert 'OE_REG","REG"' in cmds
+
+
+def test_generate_gpio_output_with_drive_strength():
+    writer = InterfaceWriter("/tmp/efinity")
+    block = {
+        "name":           "drv",
+        "mode":           "OUTPUT",
+        "location":       ["D1"],
+        "properties":     [],
+        "drive_strength": "4",
+    }
+    cmds = writer.generate_gpio(block)
+    assert 'DRIVE_STRENGTH","4"' in cmds
+
+
+def test_generate_gpio_output_const():
+    writer = InterfaceWriter("/tmp/efinity")
+    block = {
+        "name":         "const_out",
+        "mode":         "OUTPUT",
+        "location":     ["E1"],
+        "properties":   [],
+        "const_output": 1,
+    }
+    cmds = writer.generate_gpio(block)
+    assert 'CONST_OUTPUT","1"' in cmds
+
+
+def test_generate_gpio_output_const_list():
+    writer = InterfaceWriter("/tmp/efinity")
+    block = {
+        "name":         "const_bus",
+        "mode":         "OUTPUT",
+        "location":     ["E1", "E2"],
+        "size":         2,
+        "properties":   [],
+        "const_output": [0, 1],
+    }
+    cmds = writer.generate_gpio(block)
+    assert 'const_bus[0]","CONST_OUTPUT","0"' in cmds
+    assert 'const_bus[1]","CONST_OUTPUT","1"' in cmds
+
+
+def test_generate_gpio_input_clk():
+    writer = InterfaceWriter("/tmp/efinity")
+    block = {
+        "name":       "clk_in",
+        "mode":       "INPUT_CLK",
+        "location":   "F1",
+        "properties": [],
+    }
+    cmds = writer.generate_gpio(block)
+    assert 'create_input_clock_gpio("clk_in")' in cmds
+    assert 'assign_pkg_pin("clk_in","F1")' in cmds
+
+
+def test_generate_gpio_output_clk():
+    writer = InterfaceWriter("/tmp/efinity")
+    block = {
+        "name":       "clk_out",
+        "mode":       "OUTPUT_CLK",
+        "location":   "G1",
+        "properties": [],
+    }
+    cmds = writer.generate_gpio(block)
+    assert 'create_clockout_gpio("clk_out")' in cmds
+    assert 'assign_pkg_pin("clk_out","G1")' in cmds
+
+
+def test_generate_gpio_with_properties():
+    writer = InterfaceWriter("/tmp/efinity")
+    block = {
+        "name":       "prop_pin",
+        "mode":       "INPUT",
+        "location":   ["H1"],
+        "properties": [("SCHMITT_TRIGGER", "1"), ("PULL_OPTION", "WEAK_PULLUP")],
+    }
+    cmds = writer.generate_gpio(block)
+    assert 'SCHMITT_TRIGGER","1"' in cmds
+    assert 'PULL_OPTION","WEAK_PULLUP"' in cmds
+
+
+# Special overrides test ---------------------------------------------------------------------------
+
+def test_efinix_special_overrides_keys():
+    from litex.build.efinix.common import efinix_special_overrides
+    from litex.build.io import (
+        DifferentialInput, DifferentialOutput,
+        DDRInput, DDROutput, DDRTristate,
+        SDRInput, SDROutput, SDRTristate,
+        ClkInput, ClkOutput,
+    )
+    from migen.genlib.resetsync import AsyncResetSynchronizer
+    assert DifferentialInput  in efinix_special_overrides
+    assert DifferentialOutput in efinix_special_overrides
+    assert SDRInput           in efinix_special_overrides
+    assert SDROutput          in efinix_special_overrides
+    assert SDRTristate        in efinix_special_overrides
+    assert DDRInput           in efinix_special_overrides
+    assert DDROutput          in efinix_special_overrides
+    assert DDRTristate        in efinix_special_overrides
+    assert ClkInput           in efinix_special_overrides
+    assert ClkOutput          in efinix_special_overrides
+    assert AsyncResetSynchronizer in efinix_special_overrides
+
+
+# build_argdict additional tests -------------------------------------------------------------------
+
+def test_build_argdict_defaults():
+    args = SimpleNamespace(
+        synth_mode=None,
+        infer_clk_enable=None,
+        infer_sync_set_reset=None,
+        bram_output_regs_packing=None,
+        retiming=None,
+        seq_opt=None,
+        mult_input_regs_packing=None,
+        mult_output_regs_packing=None,
+        generate_bitbin=False,
+        generate_hexbin=False,
+    )
+    params = build_argdict(args)
+    assert params["efx_map_params"]["work_dir"] == "work_syn"
+    assert params["efx_map_params"]["mode"] == [None, "e_option"]
+    assert params["efx_map_params"]["infer-sync-set-reset"] == [None, "e_option"]
+    assert params["efx_pgm_params"]["generate_bitbin"] is False
+    assert params["efx_pgm_params"]["generate_hexbin"] is False
